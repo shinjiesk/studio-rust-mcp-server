@@ -320,7 +320,7 @@ pub async fn proxy_handler(
     }))
 }
 
-pub async fn dud_proxy_loop(state: PackedState, exit: Receiver<()>) {
+pub async fn dud_proxy_loop(state: PackedState, exit: Receiver<()>, port: u16) {
     let client = reqwest::Client::new();
 
     let mut waiter = { state.lock().await.waiter.clone() };
@@ -328,7 +328,7 @@ pub async fn dud_proxy_loop(state: PackedState, exit: Receiver<()>) {
         let entry = { state.lock().await.process_queue.pop_front() };
         if let Some(entry) = entry {
             let res = client
-                .post(format!("http://127.0.0.1:{STUDIO_PLUGIN_PORT}/proxy"))
+                .post(format!("http://127.0.0.1:{port}/proxy"))
                 .json(&entry)
                 .send()
                 .await;

@@ -126,10 +126,12 @@ pub fn suggest_to_config_claude_code(exe_path: &Path) -> Result<String> {
     }
 }
 
-pub fn install_to_config(
+pub fn install_to_config_with_args(
     config_paths: Vec<PathBuf>,
     exe_path: &Path,
     name: &str,
+    server_name: &str,
+    args: &[&str],
 ) -> Result<String> {
     if config_paths.is_empty() {
         return Err(eyre!("No config paths found for {name}"));
@@ -169,11 +171,9 @@ pub fn install_to_config(
             mcp_servers.remove("Roblox Studio");
         }
 
-        config["mcpServers"]["Roblox_Studio"] = json!({
+        config["mcpServers"][server_name] = json!({
           "command": &exe_path,
-          "args": [
-            "--stdio"
-          ]
+          "args": args,
         });
 
         let mut file = File::create(config_path)?;
@@ -190,6 +190,7 @@ pub fn install_to_config(
 
 async fn install_internal() -> Result<String> {
     let plugin_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/MCPStudioPlugin.rbxm"));
+
     let studio = RobloxStudio::locate()?;
     let plugins = studio.plugins_path();
     if let Err(err) = fs::create_dir(plugins) {
@@ -216,9 +217,9 @@ async fn install_internal() -> Result<String> {
 
     let mut errors = vec![];
     let results = vec![
-        install_to_config(get_claude_config(), &this_exe, "Claude"),
-        install_to_config(get_cursor_config(), &this_exe, "Cursor"),
-        install_to_config(get_antigravity_config(), &this_exe, "Antigravity"),
+        install_to_config_with_args(get_claude_config(), &this_exe, "Claude", "Roblox_Studio", &["--stdio"]),
+        install_to_config_with_args(get_cursor_config(), &this_exe, "Cursor", "Roblox_Studio", &["--stdio"]),
+        install_to_config_with_args(get_antigravity_config(), &this_exe, "Antigravity", "Roblox_Studio", &["--stdio"]),
         suggest_to_config_claude_code(&this_exe),
     ];
 

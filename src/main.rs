@@ -20,6 +20,10 @@ struct Args {
     /// Run as MCP server on stdio
     #[arg(short, long)]
     stdio: bool,
+
+    /// Port to listen on for Studio plugin connections
+    #[arg(short, long, default_value_t = STUDIO_PLUGIN_PORT)]
+    port: u16,
 }
 
 #[tokio::main]
@@ -43,8 +47,9 @@ async fn main() -> Result<()> {
 
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
 
+    let port = args.port;
     let listener =
-        tokio::net::TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), STUDIO_PLUGIN_PORT)).await;
+        tokio::net::TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), port)).await;
 
     let server_state_clone = Arc::clone(&server_state);
     let server_handle = if let Ok(listener) = listener {
@@ -53,7 +58,7 @@ async fn main() -> Result<()> {
             .route("/response", post(response_handler))
             .route("/proxy", post(proxy_handler))
             .with_state(server_state_clone);
-        tracing::info!("This MCP instance is HTTP server listening on {STUDIO_PLUGIN_PORT}");
+        tracing::info!("This MCP instance is HTTP server listening on {port}");
         tokio::spawn(async {
             axum::serve(listener, app)
                 .with_graceful_shutdown(async move {
@@ -65,7 +70,7 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!("This MCP instance will use proxy since port is busy");
         tokio::spawn(async move {
-            dud_proxy_loop(server_state_clone, close_rx).await;
+            dud_proxy_loop(server_state_clone, close_rx, port).await;
         })
     };
 

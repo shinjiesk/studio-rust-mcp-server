@@ -12,10 +12,43 @@ local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local StudioService = game:GetService("StudioService")
 
-local URI = "http://localhost:44755"
 local RECEIVE_ENDPOINT = "/request"
 local SEND_ENDPOINT = "/response"
-local PLUGIN_DISABLED_SETTING_KEY = "Disabled-MCP-plugin-setting"
+local DEFAULT_PORT = 44755
+
+-- All settings keys are per-place so each Studio instance (= each place) is independent.
+-- PlaceId 0 means an unsaved new place; those share keys as a fallback.
+local function placeKey(suffix: string): string
+	local placeId = game.PlaceId
+	if placeId ~= 0 then
+		return "MCP-" .. suffix .. "-" .. tostring(placeId)
+	end
+	return "MCP-" .. suffix .. "-unsaved"
+end
+
+local function getPort(): number
+	local saved = plugin:GetSetting(placeKey("port"))
+	if type(saved) == "number" and saved > 0 and saved < 65536 then
+		return saved
+	end
+	return DEFAULT_PORT
+end
+
+local function savePort(port: number)
+	plugin:SetSetting(placeKey("port"), port)
+end
+
+local function isDisabled(): boolean
+	return plugin:GetSetting(placeKey("disabled")) == true
+end
+
+local function saveDisabled(disabled: boolean)
+	plugin:SetSetting(placeKey("disabled"), disabled)
+end
+
+local function getURI(): string
+	return "http://localhost:" .. tostring(getPort())
+end
 
 PluginUtils.plugin = plugin
 
@@ -65,7 +98,7 @@ local function toolCallHandler(args: Types.ToolArgs): string
 end
 
 local function connectWebSocket()
-	local client = MockWebSocketService:CreateClient(URI)
+	local client = MockWebSocketService:CreateClient(getURI())
 	client:SetReceiveEndpoint(RECEIVE_ENDPOINT)
 	client:SetSendEndpoint(SEND_ENDPOINT)
 
@@ -115,28 +148,126 @@ local function getButtonImage()
 	return ok and response or "rbxasset://textures/ui/GuiImagePlaceholder.png"
 end
 
+-- Settings widget
+local widgetInfo = DockWidgetPluginGuiInfo.new(
+	Enum.InitialDockState.Float,
+	false,
+	false,
+	240, 100,
+	200, 80
+)
+local settingsWidget = plugin:CreateDockWidgetPluginGui("MCPPortSettings", widgetInfo)
+settingsWidget.Title = "MCP Port Settings"
+
+local bg = Instance.new("Frame")
+bg.Size = UDim2.fromScale(1, 1)
+bg.BackgroundColor3 = Color3.fromRGB(37, 37, 37)
+bg.BorderSizePixel = 0
+bg.Parent = settingsWidget
+
+local uiPadding = Instance.new("UIPadding")
+uiPadding.PaddingTop = UDim.new(0, 10)
+uiPadding.PaddingBottom = UDim.new(0, 10)
+uiPadding.PaddingLeft = UDim.new(0, 10)
+uiPadding.PaddingRight = UDim.new(0, 10)
+uiPadding.Parent = bg
+
+local portLabel = Instance.new("TextLabel")
+portLabel.Text = "Port:"
+portLabel.Size = UDim2.new(0, 50, 0, 28)
+portLabel.Position = UDim2.new(0, 0, 0, 0)
+portLabel.BackgroundTransparency = 1
+portLabel.TextColor3 = Color3.fromRGB(204, 204, 204)
+portLabel.TextXAlignment = Enum.TextXAlignment.Left
+portLabel.Font = Enum.Font.SourceSans
+portLabel.TextSize = 14
+portLabel.Parent = bg
+
+local portInput = Instance.new("TextBox")
+portInput.Text = tostring(getPort())
+portInput.Size = UDim2.new(1, -60, 0, 28)
+portInput.Position = UDim2.new(0, 56, 0, 0)
+portInput.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+portInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+portInput.Font = Enum.Font.SourceSans
+portInput.TextSize = 14
+portInput.ClearTextOnFocus = false
+portInput.Parent = bg
+
+local applyButton = Instance.new("TextButton")
+applyButton.Text = "Apply & Reconnect"
+applyButton.Size = UDim2.new(1, 0, 0, 28)
+applyButton.Position = UDim2.new(0, 0, 0, 36)
+applyButton.BackgroundColor3 = Color3.fromRGB(0, 120, 212)
+applyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+applyButton.Font = Enum.Font.SourceSansBold
+applyButton.TextSize = 14
+applyButton.Parent = bg
+
+-- Toolbar
 local toolbar = plugin:CreateToolbar("MCP")
 local toggleButton = toolbar:CreateButton("Toggle MCP", "Toggle connection to the server", getButtonImage())
+local settingsButton = toolbar:CreateButton("MCP Settings", "Configure MCP port", "rbxasset://textures/ui/Settings/Gear.png")
 toggleButton.ClickableWhenViewportHidden = true
+settingsButton.ClickableWhenViewportHidden = true
 
 local currentClient: MockWebSocketService.MockWebSocketClient?
 
-if not plugin:GetSetting(PLUGIN_DISABLED_SETTING_KEY) then
+local function disconnect()
+	if currentClient then
+		currentClient:Close()
+		currentClient = nil
+	end
+end
+
+local function connect()
+	disconnect()
 	currentClient = connectWebSocket()
-	print("The MCP Studio plugin is ready for prompts.")
+	print("The MCP Studio plugin is ready for prompts on port " .. tostring(getPort()) .. ".")
+end
+
+if not isDisabled() then
+	connect()
 end
 
 toggleButton:SetActive(currentClient ~= nil)
 
 toggleButton.Click:Connect(function()
 	if not currentClient then
-		currentClient = connectWebSocket()
-		print("The MCP Studio plugin is ready for prompts.")
+		connect()
 	else
-		currentClient:Close()
-		currentClient = nil
+		disconnect()
 		print("The MCP Studio plugin is stopped.")
 	end
 	toggleButton:SetActive(currentClient ~= nil)
-	plugin:SetSetting(PLUGIN_DISABLED_SETTING_KEY, currentClient == nil)
+	saveDisabled(currentClient == nil)
+end)
+
+settingsButton.Click:Connect(function()
+	settingsWidget.Enabled = not settingsWidget.Enabled
+	settingsButton:SetActive(settingsWidget.Enabled)
+	if settingsWidget.Enabled then
+		portInput.Text = tostring(getPort())
+	end
+end)
+
+settingsWidget:GetPropertyChangedSignal("Enabled"):Connect(function()
+	settingsButton:SetActive(settingsWidget.Enabled)
+end)
+
+applyButton.MouseButton1Click:Connect(function()
+	local newPort = tonumber(portInput.Text)
+	if not newPort or newPort < 1 or newPort > 65535 or math.floor(newPort) ~= newPort then
+		portInput.Text = tostring(getPort())
+		return
+	end
+	savePort(newPort)
+	local wasConnected = currentClient ~= nil
+	disconnect()
+	if wasConnected then
+		connect()
+		toggleButton:SetActive(true)
+	end
+	settingsWidget.Enabled = false
+	print("MCP port set to " .. tostring(newPort) .. ".")
 end)
