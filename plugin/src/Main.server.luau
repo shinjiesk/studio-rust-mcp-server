@@ -14,10 +14,11 @@ local StudioService = game:GetService("StudioService")
 
 local RECEIVE_ENDPOINT = "/request"
 local SEND_ENDPOINT = "/response"
-local DEFAULT_PORT = 44755
+local STATUS_ENDPOINT = "/status"
+local PORT_BASE = 44755
+local PORT_COUNT = 5
+local RETRY_INTERVAL = 5
 
--- All settings keys are per-place so each Studio instance (= each place) is independent.
--- PlaceId 0 means an unsaved new place; those share keys as a fallback.
 local function placeKey(suffix: string): string
 	local placeId = game.PlaceId
 	if placeId ~= 0 then
@@ -31,23 +32,11 @@ local function getPort(): number
 	if type(saved) == "number" and saved > 0 and saved < 65536 then
 		return saved
 	end
-	return DEFAULT_PORT
+	return PORT_BASE
 end
 
 local function savePort(port: number)
 	plugin:SetSetting(placeKey("port"), port)
-end
-
-local function isDisabled(): boolean
-	return plugin:GetSetting(placeKey("disabled")) == true
-end
-
-local function saveDisabled(disabled: boolean)
-	plugin:SetSetting(placeKey("disabled"), disabled)
-end
-
-local function getURI(): string
-	return "http://localhost:" .. tostring(getPort())
 end
 
 PluginUtils.plugin = plugin
@@ -63,9 +52,6 @@ if RunService:IsRunning() then
 end
 
 local connMessageOut = ConsoleOutput.startListener()
-plugin.Unloading:Connect(function()
-	connMessageOut:Disconnect()
-end)
 
 local old_warn = warn
 local function log(...)
@@ -97,17 +83,41 @@ local function toolCallHandler(args: Types.ToolArgs): string
 	error("Error handling request: " .. tostring(response))
 end
 
-local function connectWebSocket()
-	local client = MockWebSocketService:CreateClient(getURI())
+type PortStatus = "available" | "in_use" | "not_running"
+
+local function checkPortStatus(port: number): (PortStatus, string)
+	local url = "http://localhost:" .. tostring(port) .. STATUS_ENDPOINT
+	local ok, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = url,
+			Method = "GET",
+			Headers = { ["Content-Type"] = "application/json" },
+			Compress = Enum.HttpCompression.None,
+		})
+	end)
+	if not ok or not response or not response.Success then
+		return "not_running", ""
+	end
+	local decodeOk, body = pcall(function()
+		return HttpService:JSONDecode(response.Body)
+	end)
+	if not decodeOk or not body then
+		return "not_running", ""
+	end
+	if body.plugin_connected then
+		return "in_use", body.port_label or ""
+	end
+	return "available", body.port_label or ""
+end
+
+local function connectWebSocket(port: number)
+	local uri = "http://localhost:" .. tostring(port)
+	local client = MockWebSocketService:CreateClient(uri)
 	client:SetReceiveEndpoint(RECEIVE_ENDPOINT)
 	client:SetSendEndpoint(SEND_ENDPOINT)
 
 	client.Opened:Once(function()
 		log("[MCP] Connection opened")
-	end)
-
-	client.Closed:Once(function()
-		log("[MCP] Connection closed")
 	end)
 
 	client.MessageReceived:Connect(function(message)
@@ -148,70 +158,52 @@ local function getButtonImage()
 	return ok and response or "rbxasset://textures/ui/GuiImagePlaceholder.png"
 end
 
--- Settings widget
+-- Colors
+local COLOR_BG = Color3.fromRGB(37, 37, 37)
+local COLOR_TEXT_CONNECTED = Color3.fromRGB(80, 200, 120)
+local COLOR_TEXT_DISCONNECTED = Color3.fromRGB(200, 120, 80)
+
+-- Status widget (auto-opens on every Studio launch)
 local widgetInfo = DockWidgetPluginGuiInfo.new(
 	Enum.InitialDockState.Float,
-	false,
-	false,
-	240, 100,
-	200, 80
+	true,  -- initEnabled
+	true,  -- overrideEnabledRestore
+	240, 60,
+	200, 50
 )
-local settingsWidget = plugin:CreateDockWidgetPluginGui("MCPPortSettings", widgetInfo)
-settingsWidget.Title = "MCP Port Settings"
+local statusWidget = plugin:CreateDockWidgetPluginGui("MCPStatus", widgetInfo)
+statusWidget.Title = "MCP Status"
 
 local bg = Instance.new("Frame")
 bg.Size = UDim2.fromScale(1, 1)
-bg.BackgroundColor3 = Color3.fromRGB(37, 37, 37)
+bg.BackgroundColor3 = COLOR_BG
 bg.BorderSizePixel = 0
-bg.Parent = settingsWidget
+bg.Parent = statusWidget
 
-local uiPadding = Instance.new("UIPadding")
-uiPadding.PaddingTop = UDim.new(0, 10)
-uiPadding.PaddingBottom = UDim.new(0, 10)
-uiPadding.PaddingLeft = UDim.new(0, 10)
-uiPadding.PaddingRight = UDim.new(0, 10)
-uiPadding.Parent = bg
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Text = "接続中..."
+statusLabel.Size = UDim2.fromScale(1, 1)
+statusLabel.BackgroundTransparency = 1
+statusLabel.TextColor3 = COLOR_TEXT_DISCONNECTED
+statusLabel.Font = Enum.Font.SourceSansSemibold
+statusLabel.TextSize = 14
+statusLabel.TextWrapped = true
+statusLabel.Parent = bg
 
-local portLabel = Instance.new("TextLabel")
-portLabel.Text = "Port:"
-portLabel.Size = UDim2.new(0, 50, 0, 28)
-portLabel.Position = UDim2.new(0, 0, 0, 0)
-portLabel.BackgroundTransparency = 1
-portLabel.TextColor3 = Color3.fromRGB(204, 204, 204)
-portLabel.TextXAlignment = Enum.TextXAlignment.Left
-portLabel.Font = Enum.Font.SourceSans
-portLabel.TextSize = 14
-portLabel.Parent = bg
-
-local portInput = Instance.new("TextBox")
-portInput.Text = tostring(getPort())
-portInput.Size = UDim2.new(1, -60, 0, 28)
-portInput.Position = UDim2.new(0, 56, 0, 0)
-portInput.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-portInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-portInput.Font = Enum.Font.SourceSans
-portInput.TextSize = 14
-portInput.ClearTextOnFocus = false
-portInput.Parent = bg
-
-local applyButton = Instance.new("TextButton")
-applyButton.Text = "Apply & Reconnect"
-applyButton.Size = UDim2.new(1, 0, 0, 28)
-applyButton.Position = UDim2.new(0, 0, 0, 36)
-applyButton.BackgroundColor3 = Color3.fromRGB(0, 120, 212)
-applyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-applyButton.Font = Enum.Font.SourceSansBold
-applyButton.TextSize = 14
-applyButton.Parent = bg
-
--- Toolbar
+-- Toolbar (single button: toggles widget visibility, color shows connection state)
 local toolbar = plugin:CreateToolbar("MCP")
-local toggleButton = toolbar:CreateButton("Toggle MCP", "Toggle connection to the server", getButtonImage())
-local settingsButton = toolbar:CreateButton("MCP Settings", "Configure MCP port", "rbxasset://textures/ui/Settings/Gear.png")
+local toggleButton = toolbar:CreateButton("Toggle MCP", "Show/hide MCP status", getButtonImage())
 toggleButton.ClickableWhenViewportHidden = true
-settingsButton.ClickableWhenViewportHidden = true
 
-local currentClient: MockWebSocketService.MockWebSocketClient?
+-- Connection state
+local currentClient: MockWebSocketService.MockWebSocketClient? = nil
+local retryThread: thread? = nil
+
+local function setStatusMessage(text: string, connected: boolean)
+	statusLabel.Text = text
+	statusLabel.TextColor3 = if connected then COLOR_TEXT_CONNECTED else COLOR_TEXT_DISCONNECTED
+	toggleButton:SetActive(connected)
+end
 
 local function disconnect()
 	if currentClient then
@@ -220,54 +212,71 @@ local function disconnect()
 	end
 end
 
-local function connect()
-	disconnect()
-	currentClient = connectWebSocket()
-	print("The MCP Studio plugin is ready for prompts on port " .. tostring(getPort()) .. ".")
+local function stopRetryLoop()
+	if retryThread then
+		task.cancel(retryThread)
+		retryThread = nil
+	end
 end
 
-if not isDisabled() then
-	connect()
+local function startRetryLoop()
+	-- forward declaration; implemented below
 end
 
-toggleButton:SetActive(currentClient ~= nil)
+local function scanAndConnect(): boolean
+	local hint = getPort()
+	local portsToTry = { hint }
+	for i = 1, PORT_COUNT do
+		local port = PORT_BASE + (i - 1)
+		if port ~= hint then
+			table.insert(portsToTry, port)
+		end
+	end
 
+	for _, port in portsToTry do
+		local status, _ = checkPortStatus(port)
+		if status == "available" then
+			savePort(port)
+			disconnect()
+			currentClient = connectWebSocket(port)
+			currentClient.Closed:Once(function()
+				currentClient = nil
+				local portIndex = port - PORT_BASE + 1
+				setStatusMessage("Port " .. portIndex .. " から切断されました\n再接続中...", false)
+				startRetryLoop()
+			end)
+			local portIndex = port - PORT_BASE + 1
+			setStatusMessage("Port " .. portIndex .. " に接続しました", true)
+			return true
+		end
+	end
+	return false
+end
+
+function startRetryLoop()
+	stopRetryLoop()
+	retryThread = task.spawn(function()
+		while not currentClient do
+			if scanAndConnect() then
+				break
+			end
+			setStatusMessage("サーバーが見つかりません\nCursorでサーバーを起動してください", false)
+			task.wait(RETRY_INTERVAL)
+		end
+	end)
+end
+
+-- Auto-connect on startup
+startRetryLoop()
+
+-- Toggle button: show/hide widget
 toggleButton.Click:Connect(function()
-	if not currentClient then
-		connect()
-	else
-		disconnect()
-		print("The MCP Studio plugin is stopped.")
-	end
-	toggleButton:SetActive(currentClient ~= nil)
-	saveDisabled(currentClient == nil)
+	statusWidget.Enabled = not statusWidget.Enabled
 end)
 
-settingsButton.Click:Connect(function()
-	settingsWidget.Enabled = not settingsWidget.Enabled
-	settingsButton:SetActive(settingsWidget.Enabled)
-	if settingsWidget.Enabled then
-		portInput.Text = tostring(getPort())
-	end
-end)
-
-settingsWidget:GetPropertyChangedSignal("Enabled"):Connect(function()
-	settingsButton:SetActive(settingsWidget.Enabled)
-end)
-
-applyButton.MouseButton1Click:Connect(function()
-	local newPort = tonumber(portInput.Text)
-	if not newPort or newPort < 1 or newPort > 65535 or math.floor(newPort) ~= newPort then
-		portInput.Text = tostring(getPort())
-		return
-	end
-	savePort(newPort)
-	local wasConnected = currentClient ~= nil
+-- Cleanup
+plugin.Unloading:Connect(function()
+	stopRetryLoop()
 	disconnect()
-	if wasConnected then
-		connect()
-		toggleButton:SetActive(true)
-	end
-	settingsWidget.Enabled = false
-	print("MCP port set to " .. tostring(newPort) .. ".")
+	connMessageOut:Disconnect()
 end)

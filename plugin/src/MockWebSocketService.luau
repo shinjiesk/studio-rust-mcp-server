@@ -80,6 +80,8 @@ local function doRequest(url: string, method: "GET" | "POST", body: any)
 	return if ok then response else nil
 end
 
+local MAX_CONSECUTIVE_FAILURES = 3
+
 function MockWebSocketClient._OpenImpl(self: MockWebSocketClientPrivate)
 	assert(self.ConnectionState == EnumWebSocketState.Connecting, "WebSocket is not in the Connecting state")
 
@@ -87,18 +89,26 @@ function MockWebSocketClient._OpenImpl(self: MockWebSocketClientPrivate)
 	self._OpenedEvent:Fire()
 
 	self._pollTask = task.spawn(function()
+		local consecutiveFailures = 0
 		while self.ConnectionState == EnumWebSocketState.Open do
 			local response = doRequest(self._uri .. self._receiveEndpoint, "GET")
 
 			if response then
 				if response.StatusCode == 200 and response.Success then
+					consecutiveFailures = 0
 					self._MessageReceivedEvent:Fire(response.Body)
 					continue
 				elseif response.StatusCode == 423 then
+					consecutiveFailures = 0
 					continue
 				end
 			end
 
+			consecutiveFailures += 1
+			if consecutiveFailures >= MAX_CONSECUTIVE_FAILURES then
+				self:Close()
+				break
+			end
 			task.wait(POLL_WAIT_TIME)
 		end
 	end)
@@ -112,9 +122,11 @@ function MockWebSocketClient.Close(self: MockWebSocketClientPrivate)
 	if CloseableStates[self.ConnectionState] then
 		self.ConnectionState = EnumWebSocketState.Closing
 
-		if self._pollTask and coroutine.status(self._pollTask) == "running" then
-			task.cancel(self._pollTask)
-			self._pollTask = nil :: any
+		if self._pollTask then
+			if self._pollTask ~= coroutine.running() then
+				task.cancel(self._pollTask)
+			end
+			self._pollTask = nil
 		end
 
 		self.ConnectionState = EnumWebSocketState.Closed

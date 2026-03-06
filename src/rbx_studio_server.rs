@@ -15,11 +15,18 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, watch, Mutex};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
-pub const STUDIO_PLUGIN_PORT: u16 = 44755;
+pub const PORT_RANGE_START: u16 = 44755;
+pub const PORT_RANGE_SIZE: usize = 5;
 const LONG_POLL_DURATION: Duration = Duration::from_secs(15);
+pub const PLUGIN_CONNECTED_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub fn port_label(port: u16) -> String {
+    let index = (port - PORT_RANGE_START) as usize + 1;
+    format!("Port {index}")
+}
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ToolArguments {
@@ -39,18 +46,32 @@ pub struct AppState {
     output_map: HashMap<Uuid, mpsc::UnboundedSender<Result<String>>>,
     waiter: watch::Receiver<()>,
     trigger: watch::Sender<()>,
+    last_plugin_poll: Option<Instant>,
+    port_label: String,
 }
 pub type PackedState = Arc<Mutex<AppState>>;
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(port_label: String) -> Self {
         let (trigger, waiter) = watch::channel(());
         Self {
             process_queue: VecDeque::new(),
             output_map: HashMap::new(),
             waiter,
             trigger,
+            last_plugin_poll: None,
+            port_label,
         }
+    }
+
+    pub fn is_plugin_connected(&self) -> bool {
+        self.last_plugin_poll
+            .map(|t| t.elapsed() < PLUGIN_CONNECTED_TIMEOUT)
+            .unwrap_or(false)
+    }
+
+    pub fn port_label(&self) -> &str {
+        &self.port_label
     }
 }
 
@@ -73,6 +94,7 @@ impl ToolArguments {
 pub struct RBXStudioServer {
     state: PackedState,
     tool_router: ToolRouter<Self>,
+    port_label: String,
 }
 
 #[tool_handler]
@@ -80,7 +102,10 @@ impl ServerHandler for RBXStudioServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::LATEST,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_logging()
+                .build(),
             server_info: Implementation {
                 name: "Roblox_Studio".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -88,14 +113,16 @@ impl ServerHandler for RBXStudioServer {
                 icons: None,
                 website_url: None,
             },
-            instructions: Some(
-                "You must aware of current studio mode before using any tools, infer the mode from conversation context or get_studio_mode.
-User run_code to query data from Roblox Studio place or to change it
-After calling run_script_in_play_mode, the datamodel status will be reset to stop mode.
-Prefer using start_stop_play tool instead run_script_in_play_mode, Only used run_script_in_play_mode to run one time unit test code on server datamodel.
-"
-                    .to_string(),
-            ),
+            instructions: Some(format!(
+                "This MCP server is running as {port_label}.\n\
+                The Roblox Studio plugin connects automatically.\n\
+                You must be aware of current studio mode before using any tools, infer the mode from conversation context or get_studio_mode.\n\
+                Use run_code to query data from Roblox Studio place or to change it.\n\
+                After calling run_script_in_play_mode, the datamodel status will be reset to stop mode.\n\
+                Prefer using start_stop_play tool instead run_script_in_play_mode, Only use run_script_in_play_mode to run one time unit test code on server datamodel.\n\
+                If the plugin is not connected, ask the user to open a Roblox Studio instance.",
+                port_label = self.port_label,
+            )),
         }
     }
 }
@@ -146,10 +173,11 @@ enum ToolArgumentValues {
 }
 #[tool_router]
 impl RBXStudioServer {
-    pub fn new(state: PackedState) -> Self {
+    pub fn new(state: PackedState, port_label: String) -> Self {
         Self {
             state,
             tool_router: Self::tool_router(),
+            port_label,
         }
     }
 
@@ -225,6 +253,14 @@ impl RBXStudioServer {
         &self,
         args: ToolArgumentValues,
     ) -> Result<CallToolResult, ErrorData> {
+        {
+            let state = self.state.lock().await;
+            if !state.is_plugin_connected() {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Roblox Studio plugin is not connected. Please ensure Studio is running with the MCP plugin enabled.",
+                )]));
+            }
+        }
         let (command, id) = ToolArguments::new(args);
         tracing::debug!("Running command: {:?}", command);
         let (tx, mut rx) = mpsc::unbounded_channel::<Result<String>>();
@@ -254,6 +290,10 @@ impl RBXStudioServer {
 }
 
 pub async fn request_handler(State(state): State<PackedState>) -> Result<impl IntoResponse> {
+    {
+        let mut s = state.lock().await;
+        s.last_plugin_poll = Some(Instant::now());
+    }
     let timeout = tokio::time::timeout(LONG_POLL_DURATION, async {
         let mut waiter = { state.lock().await.waiter.clone() };
         loop {
@@ -271,6 +311,20 @@ pub async fn request_handler(State(state): State<PackedState>) -> Result<impl In
         Ok(result) => Ok(Json(result?).into_response()),
         _ => Ok((StatusCode::LOCKED, String::new()).into_response()),
     }
+}
+
+#[derive(Serialize)]
+pub struct StatusResponse {
+    port_label: String,
+    plugin_connected: bool,
+}
+
+pub async fn status_handler(State(state): State<PackedState>) -> Json<StatusResponse> {
+    let s = state.lock().await;
+    Json(StatusResponse {
+        port_label: s.port_label().to_string(),
+        plugin_connected: s.is_plugin_connected(),
+    })
 }
 
 pub async fn response_handler(

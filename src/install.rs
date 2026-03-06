@@ -76,11 +76,7 @@ fn get_claude_config() -> Vec<PathBuf> {
 }
 
 fn get_cursor_config() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home_dir) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
-        paths.push(Path::new(&home_dir).join(".cursor").join("mcp.json"));
-    }
-    paths
+    vec![]
 }
 
 fn get_antigravity_config() -> Vec<PathBuf> {

@@ -10,9 +10,15 @@ Roblox Studio と AI クライアント (Claude Desktop, Cursor 等) を Model C
 AI Client (Claude/Cursor)
     ↕ stdio (MCP プロトコル)
 Rust MCP Server (rmcp)
-    ↕ HTTP long-poll (localhost:44755)
+    ↕ HTTP long-poll (localhost:44755〜44759 自動選択)
 Roblox Studio Plugin (Luau)
 ```
+
+### ポート自動選択（v0.1.0+）
+
+MCP サーバーは起動時に 44755〜44759 の範囲で最初に空いているポートを自動的にバインドする。
+バインドしたポートは "Port 1"〜"Port 5" としてラベル付けされ、MCP の `instructions` に含まれて AI に通知される。
+Studio プラグイン側は設定画面のドロップダウンで Port 1〜5 を選択する。各ポートの状態（選択可能/使用中/未起動）は `/status` エンドポイントで確認できる。
 
 ## ディレクトリ構造
 

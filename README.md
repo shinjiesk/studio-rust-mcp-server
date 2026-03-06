@@ -1,129 +1,246 @@
-> [!IMPORTANT]
-> This MCP Server is no longer being actively updated. We've shifted engineering efforts to the [built-in MCP Server that ships directly with Roblox Studio](https://create.roblox.com/docs/studio/mcp), which we recommend as the primary way to connect external AI tools to Studio going forward.
-> 
-> This repository will remain available as a reference implementation. We're also working towards open-sourcing the built-in MCP Server and other mechanisms to contribute to Assistant in the future — stay tuned.
+# Studio MCP Server - Multi-Chat Fork
 
+> [!NOTE]
+> 日本語は[こちら](#日本語)
 
-# Quick Setup
-1. Download and Run the server: [Windows](https://github.com/Roblox/studio-rust-mcp-server/releases/latest/download/rbx-studio-mcp.exe) or [macOS](https://github.com/Roblox/studio-rust-mcp-server/releases/latest/download/macOS-rbx-studio-mcp.zip)
-2. Restart AI Client (Claude, Cursor, etc) and Roblox Studio
-3. Done!
+This is a fork of [Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server) with **multi-chat support for Cursor**.
 
-# Roblox Studio MCP Server
+## Why this fork?
 
-This repository contains a reference implementation of the Model Context Protocol (MCP) that enables
-communication between Roblox Studio via a plugin and [Claude Desktop](https://claude.ai/download) or [Cursor](https://www.cursor.com/).
-It consists of the following Rust-based components, which communicate through internal shared
-objects.
+Roblox Studio now ships with a [built-in MCP Server](https://create.roblox.com/docs/studio/mcp). However, the built-in server uses a single connection with a target-switching model (`set_active_studio`), which **does not work with multiple Cursor chat sessions simultaneously**. If two chats try to control different Studio instances, they conflict.
 
-- A web server built on `axum` that a Studio plugin long polls.
-- A `rmcp` server that talks to Claude via `stdio` transport.
+This fork solves that by running **up to 5 independent MCP server instances** on separate ports (44755-44759). Each Cursor chat gets its own dedicated server, enabling true parallel control of multiple Studio instances.
 
-When LLM requests to run a tool, the plugin will get a request through the long polling and post a
-response. It will cause responses to be sent to the Claude app.
+When the official built-in MCP server supports multi-chat natively, this fork will no longer be needed.
 
-**Please note** that this MCP server will be accessed by third-party tools, allowing them to modify
-and read the contents of your opened place. Third-party data handling and privacy practices are
-subject to their respective terms and conditions.
+## Features
 
-![Scheme](MCP-Server.png)
+- **Multi-chat parallel control** - Each Cursor chat connects to a separate MCP server, controlling its own Studio instance independently
+- **Auto-connect plugin** - The Studio plugin automatically finds and connects to an available server (no manual port selection)
+- **Disconnect detection** - Plugin detects server disconnection within seconds and retries automatically
+- **Connection notifications** - Cursor receives MCP log notifications when Studio connects or disconnects
+- **Immediate error on disconnect** - Tool calls fail immediately if Studio is not connected (no hanging)
 
-The setup process also contains a small plugin installation and Claude Desktop configuration script.
+## Prerequisites
 
-### Included tools
-
-- **run_code** - Runs a command in Roblox Studio and returns the printed output. Can be used to both make changes and retrieve information.
-- **insert_model** - Inserts a model from the Roblox Creator Store into the workspace. Returns the inserted model name.
-- **get_console_output** - Gets the console output from Roblox Studio.
-- **start_stop_play** - Starts or stops play mode or runs the server.
-- **run_script_in_play_mode** - Runs a script in play mode and automatically stops play after the script finishes or times out. Returns structured output including logs, errors, and duration.
-- **get_studio_mode** - Gets the current Studio mode (`start_play`, `run_server`, or `stop`).
+- [Rust](https://www.rust-lang.org/tools/install)
+- [Roblox Studio](https://create.roblox.com/docs/en-us/studio/setup)
+- [Cursor](https://www.cursor.com/)
 
 ## Setup
 
-### Install with release binaries
+### 1. Build
 
-This MCP Server supports pretty much any MCP Client but will automatically set up only [Claude Desktop](https://claude.ai/download) and [Cursor](https://www.cursor.com/) if found.
+```sh
+git clone https://github.com/shinjiesk/studio-rust-mcp-server.git
+cd studio-rust-mcp-server
+cargo build --release
+```
 
-To set up automatically:
+### 2. Install the plugin
 
-1. Ensure you have [Roblox Studio](https://create.roblox.com/docs/en-us/studio/setup),
-   and [Claude Desktop](https://claude.ai/download)/[Cursor](https://www.cursor.com/) installed and started at least once.
-1. Exit MCP Clients and Roblox Studio if they are running.
-1. Download and run the installer:
-   1. Go to the [releases](https://github.com/Roblox/studio-rust-mcp-server/releases) page and
-      download the latest release for your platform.
-   1. Unzip the downloaded file if necessary and run the installer.
-   1. Restart Claude/Cursor and Roblox Studio if they are running.
+Copy the built plugin to your Roblox Studio plugins directory:
 
-### Setting up manually
+```sh
+cp target/release/build/rbx-studio-mcp-*/out/MCPStudioPlugin.rbxm \
+   ~/Documents/Roblox/Plugins/
+```
 
-To set up manually add following to your MCP Client config:
+Or run the installer (also installs the plugin):
+
+```sh
+cargo run
+```
+
+### 3. Configure Cursor
+
+Add the following to your **project-level** `.cursor/mcp.json`. Replace the command path with your actual build path.
 
 ```json
 {
   "mcpServers": {
-    "Roblox_Studio": {
-      "args": [
-        "--stdio"
-      ],
-      "command": "Path-to-downloaded\\rbx-studio-mcp.exe"
+    "Roblox_Studio_1": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44755"]
+    },
+    "Roblox_Studio_2": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44756"]
+    },
+    "Roblox_Studio_3": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44757"]
+    },
+    "Roblox_Studio_4": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44758"]
+    },
+    "Roblox_Studio_5": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44759"]
     }
   }
 }
 ```
 
-On macOS the path would be something like `"/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp"` if you move the app to the Applications directory.
+### 4. Enable in Cursor
 
-For Claude Desktop, go to Settings > Developer > Edit Config. This opens location of the  `claude_desktop_config.json`.
+1. Open Cursor with the project folder containing `.cursor/mcp.json`
+2. Go to **Settings > MCP**
+3. Enable `Roblox_Studio_1` through `Roblox_Studio_5`
 
-Some clients require user to setup the mcp server manually for each project.
-For example, Claude Code command would look like this:
-```sh
-claude mcp add --transport stdio Roblox_Studio -- '/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp' --stdio
+### 5. Open Studio
+
+Open Roblox Studio. The "MCP Status" widget will appear automatically showing the connection status. Each Studio instance connects to its own port.
+
+## Included tools
+
+| Tool | Description |
+|------|-------------|
+| `run_code` | Run Luau code in Studio and return the output |
+| `insert_model` | Insert a model from the Roblox Creator Store |
+| `get_console_output` | Get the console output from Studio |
+| `start_stop_play` | Start or stop play mode |
+| `run_script_in_play_mode` | Run a script in play mode with auto-stop |
+| `get_studio_mode` | Get the current Studio mode |
+
+## Architecture
+
+```
+Cursor Chat 1  ──stdio──  MCP Server (port 44755)  ──HTTP──  Studio Plugin 1
+Cursor Chat 2  ──stdio──  MCP Server (port 44756)  ──HTTP──  Studio Plugin 2
+Cursor Chat 3  ──stdio──  MCP Server (port 44757)  ──HTTP──  Studio Plugin 3
+  ...                        ...                                ...
 ```
 
-### Build from source
+Each MCP server instance binds to a fixed port. The Studio plugin scans ports 44755-44759, finds an available server, and connects automatically.
 
-To build and install the MCP reference implementation from this repository's source code:
+## License
 
-1. Ensure you have [Roblox Studio](https://create.roblox.com/docs/en-us/studio/setup) and
-   [Claude Desktop](https://claude.ai/download) installed and started at least once.
-1. Exit Claude and Roblox Studio if they are running.
-1. [Install](https://www.rust-lang.org/tools/install) Rust.
-1. Download or clone this repository.
-1. Run the following command from the root of this repository.
-   ```sh
-   cargo run
-   ```
-   This command carries out the following actions:
-      - Builds the Rust MCP server app.
-      - Sets up Claude to communicate with the MCP server.
-      - Builds and installs the Studio plugin to communicate with the MCP server.
+MIT License - See [LICENSE](LICENSE) for details.
 
-After the command completes, the Studio MCP Server is installed and ready for your prompts from
-Claude Desktop.
+Based on [Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server) by Roblox Corporation.
 
-## Verify setup
+---
 
-To make sure everything is set up correctly, follow these steps:
+<a id="日本語"></a>
 
-1. In Roblox Studio, click on the **Plugins** tab and verify that the MCP plugin appears. Clicking on
-   the icon toggles the MCP communication with Claude Desktop on and off, which you can verify in
-   the Roblox Studio console output.
-1. In the console, verify that `The MCP Studio plugin is ready for prompts.` appears in the output.
-   Clicking on the plugin's icon toggles MCP communication with Claude Desktop on and off,
-   which you can also verify in the console output.
-1. Verify that Claude Desktop is correctly configured by clicking on the hammer icon for MCP tools
-   beneath the text field where you enter prompts. This should open a window with the list of
-   available Roblox Studio tools (`insert_model` and `run_code`).
+# Studio MCP Server - マルチチャット対応 Fork
 
-**Note**: You can fix common issues with setup by restarting Studio and Claude Desktop. Claude
-sometimes is hidden in the system tray, so ensure you've exited it completely.
+これは [Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server) の fork で、**Cursor のマルチチャットに対応**しています。
 
-## Send requests
+## なぜこの fork が必要か
 
-1. Open a place in Studio.
-1. Type a prompt in Claude Desktop and accept any permissions to communicate with Studio.
-1. Verify that the intended action is performed in Studio by checking the console, inspecting the
-   data model in Explorer, or visually confirming the desired changes occurred in your place.
+Roblox Studio には[組み込み MCP サーバー](https://create.roblox.com/docs/studio/mcp)が搭載されました。しかし、組み込み版は接続先を切り替える方式（`set_active_studio`）のため、**複数の Cursor チャットから同時に別々の Studio を操作するとコンフリクトが発生します**。
+
+この fork は **最大 5 つの独立した MCP サーバーインスタンス**を別々のポート（44755-44759）で起動することで、各チャットが専用のサーバーを持ち、複数の Studio を並行制御できます。
+
+公式の組み込み MCP サーバーがマルチチャットにネイティブ対応した場合、この fork は役割を終えます。
+
+## 特徴
+
+- **マルチチャット並行制御** - 各 Cursor チャットが別々の MCP サーバーに接続し、独立して Studio を操作
+- **プラグイン自動接続** - Studio プラグインが空いているサーバーを自動検出して接続（ポートの手動選択不要）
+- **切断検知** - サーバー切断を数秒で検知し、自動リトライ
+- **接続通知** - Studio の接続・切断を MCP ログ通知で Cursor に伝達
+- **未接続時の即時エラー** - Studio 未接続時のツール呼び出しはハングせず即座にエラーを返す
+
+## 前提条件
+
+- [Rust](https://www.rust-lang.org/tools/install)
+- [Roblox Studio](https://create.roblox.com/docs/en-us/studio/setup)
+- [Cursor](https://www.cursor.com/)
+
+## セットアップ
+
+### 1. ビルド
+
+```sh
+git clone https://github.com/shinjiesk/studio-rust-mcp-server.git
+cd studio-rust-mcp-server
+cargo build --release
+```
+
+### 2. プラグインのインストール
+
+ビルドされたプラグインを Roblox Studio のプラグインディレクトリにコピーします:
+
+```sh
+cp target/release/build/rbx-studio-mcp-*/out/MCPStudioPlugin.rbxm \
+   ~/Documents/Roblox/Plugins/
+```
+
+または、インストーラーを実行します（プラグインも同時にインストールされます）:
+
+```sh
+cargo run
+```
+
+### 3. Cursor の設定
+
+**プロジェクトレベル**の `.cursor/mcp.json` に以下を追加します。command のパスは実際のビルドパスに置き換えてください。
+
+```json
+{
+  "mcpServers": {
+    "Roblox_Studio_1": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44755"]
+    },
+    "Roblox_Studio_2": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44756"]
+    },
+    "Roblox_Studio_3": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44757"]
+    },
+    "Roblox_Studio_4": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44758"]
+    },
+    "Roblox_Studio_5": {
+      "command": "/path/to/studio-rust-mcp-server/target/release/rbx-studio-mcp",
+      "args": ["--stdio", "--port", "44759"]
+    }
+  }
+}
+```
+
+### 4. Cursor で有効化
+
+1. `.cursor/mcp.json` があるプロジェクトフォルダを Cursor で開く
+2. **Settings > MCP** を開く
+3. `Roblox_Studio_1` ~ `Roblox_Studio_5` を全て **Enabled** にする
+
+### 5. Studio を起動
+
+Roblox Studio を開くと「MCP Status」ウィジェットが自動表示され、接続状態が確認できます。各 Studio インスタンスは自動的に別々のポートに接続します。
+
+## 含まれるツール
+
+| ツール | 説明 |
+|--------|------|
+| `run_code` | Studio で Luau コードを実行し出力を返す |
+| `insert_model` | Roblox Creator Store からモデルを挿入 |
+| `get_console_output` | Studio のコンソール出力を取得 |
+| `start_stop_play` | プレイモードの開始・停止 |
+| `run_script_in_play_mode` | プレイモードでスクリプトを実行（自動停止付き） |
+| `get_studio_mode` | 現在の Studio モードを取得 |
+
+## アーキテクチャ
+
+```
+Cursor Chat 1  ──stdio──  MCP Server (port 44755)  ──HTTP──  Studio Plugin 1
+Cursor Chat 2  ──stdio──  MCP Server (port 44756)  ──HTTP──  Studio Plugin 2
+Cursor Chat 3  ──stdio──  MCP Server (port 44757)  ──HTTP──  Studio Plugin 3
+  ...                        ...                                ...
+```
+
+各 MCP サーバーインスタンスは固定ポートにバインドされます。Studio プラグインはポート 44755-44759 をスキャンし、空いているサーバーを見つけて自動接続します。
+
+## ライセンス
+
+MIT License - 詳細は [LICENSE](LICENSE) を参照。
+
+[Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server)（Roblox Corporation）をベースにしています。
