@@ -10,7 +10,6 @@ local Types = require(Main.Types)
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
-local StudioService = game:GetService("StudioService")
 
 local RECEIVE_ENDPOINT = "/request"
 local SEND_ENDPOINT = "/response"
@@ -151,12 +150,8 @@ local function connectWebSocket(port: number)
 	return client
 end
 
-local function getButtonImage()
-	local ok, response = pcall(function()
-		return StudioService:GetClassIcon("PackageLink").Image
-	end)
-	return ok and response or "rbxasset://textures/ui/GuiImagePlaceholder.png"
-end
+local ICON_ON = "rbxassetid://120359873220253"
+local ICON_OFF = "rbxassetid://91620846688637"
 
 -- Colors
 local COLOR_BG = Color3.fromRGB(37, 37, 37)
@@ -192,17 +187,19 @@ statusLabel.Parent = bg
 
 -- Toolbar (single button: toggles widget visibility, color shows connection state)
 local toolbar = plugin:CreateToolbar("MCP")
-local toggleButton = toolbar:CreateButton("Toggle MCP", "Show/hide MCP status", getButtonImage())
+local toggleButton = toolbar:CreateButton("Toggle MCP", "MCP ON/OFF", ICON_OFF)
 toggleButton.ClickableWhenViewportHidden = true
 
 -- Connection state
 local currentClient: MockWebSocketService.MockWebSocketClient? = nil
 local retryThread: thread? = nil
+local mcpEnabled = true
 
 local function setStatusMessage(text: string, connected: boolean)
 	statusLabel.Text = text
 	statusLabel.TextColor3 = if connected then COLOR_TEXT_CONNECTED else COLOR_TEXT_DISCONNECTED
 	toggleButton:SetActive(connected)
+	toggleButton.Icon = if connected then ICON_ON else ICON_OFF
 end
 
 local function disconnect()
@@ -255,8 +252,11 @@ end
 
 function startRetryLoop()
 	stopRetryLoop()
+	if not mcpEnabled then
+		return
+	end
 	retryThread = task.spawn(function()
-		while not currentClient do
+		while not currentClient and mcpEnabled do
 			if scanAndConnect() then
 				break
 			end
@@ -269,9 +269,17 @@ end
 -- Auto-connect on startup
 startRetryLoop()
 
--- Toggle button: show/hide widget
+-- Toggle button: MCP ON/OFF
 toggleButton.Click:Connect(function()
-	statusWidget.Enabled = not statusWidget.Enabled
+	if mcpEnabled then
+		mcpEnabled = false
+		stopRetryLoop()
+		disconnect()
+		setStatusMessage("MCP オフ", false)
+	else
+		mcpEnabled = true
+		startRetryLoop()
+	end
 end)
 
 -- Cleanup
